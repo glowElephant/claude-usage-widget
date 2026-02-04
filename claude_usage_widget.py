@@ -11,7 +11,7 @@ import os
 import sys
 import tkinter as tk
 from tkinter import ttk, messagebox
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import winreg
 import ctypes
@@ -19,20 +19,20 @@ import random
 
 
 class ClaudeUsageWidget:
-    # 플랜별 5시간 세션 한도 (토큰)
+    # 플랜별 5시간 세션 한도 (output tokens 기준)
     PLAN_LIMITS = {
-        "pro": 44000,
-        "max": 88000,
-        "max_5x": 88000,
-        "max_20x": 220000,
+        "pro": 9000,
+        "max": 18000,
+        "max_5x": 18000,
+        "max_20x": 45000,
     }
 
-    # 플랜별 주간 한도 (대략적 추정치)
+    # 플랜별 주간 한도 (output tokens 기준, 추정치)
     WEEKLY_LIMITS = {
-        "pro": 300000,
-        "max": 600000,
-        "max_5x": 600000,
-        "max_20x": 1500000,
+        "pro": 35000,
+        "max": 70000,
+        "max_5x": 70000,
+        "max_20x": 175000,
     }
 
     # MZ스러운 상태 메시지들
@@ -149,7 +149,7 @@ class ClaudeUsageWidget:
         self.root.overrideredirect(True)
 
         # 창 크기 및 위치 (우측 상단)
-        width, height = 280, 180
+        width, height = 280, 200
         screen_width = self.root.winfo_screenwidth()
         x = screen_width - width - 20
         y = 20
@@ -335,10 +335,9 @@ class ClaudeUsageWidget:
                         usage = message.get("usage", {})
 
                         if usage:
-                            total_tokens += usage.get("input_tokens", 0)
-                            total_tokens += usage.get("output_tokens", 0)
-                            total_tokens += usage.get("cache_creation_input_tokens", 0) * 0.25
-                            total_tokens += usage.get("cache_read_input_tokens", 0) * 0.1
+                            # Claude Code 사용량은 주로 output tokens 기준으로 측정
+                            output_tokens = usage.get("output_tokens", 0)
+                            total_tokens += output_tokens
                     except json.JSONDecodeError:
                         continue
         except Exception:
@@ -347,7 +346,8 @@ class ClaudeUsageWidget:
 
     def get_usage_since(self, hours=5):
         """특정 시간 이후의 사용량 계산"""
-        since_time = datetime.now() - timedelta(hours=hours)
+        # UTC 기준으로 계산 (jsonl 타임스탬프가 UTC)
+        since_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
         total_tokens = 0
 
         if not self.projects_dir.exists():
@@ -366,7 +366,8 @@ class ClaudeUsageWidget:
 
     def get_weekly_usage(self):
         """이번 주 월요일부터의 사용량 계산"""
-        now = datetime.now()
+        # UTC 기준으로 계산 (jsonl 타임스탬프가 UTC)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         monday = now - timedelta(days=now.weekday())
         monday = monday.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -386,9 +387,56 @@ class ClaudeUsageWidget:
 
         return total_tokens
 
+    def get_first_message_time(self):
+        """최근 5시간 내 첫 번째 메시지 시간 찾기"""
+        five_hours_ago = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=5)
+        first_time = None
+
+        if not self.projects_dir.exists():
+            return None
+
+        for jsonl_file in self.projects_dir.rglob("*.jsonl"):
+            try:
+                mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime)
+                if mtime < five_hours_ago:
+                    continue
+
+                with open(jsonl_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            data = json.loads(line.strip())
+                            timestamp_str = data.get("timestamp", "")
+                            if timestamp_str:
+                                ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")).replace(tzinfo=None)
+                                if ts >= five_hours_ago:
+                                    if first_time is None or ts < first_time:
+                                        first_time = ts
+                                    break  # 파일 내 첫 번째만 확인
+                        except:
+                            continue
+            except:
+                continue
+
+        return first_time
+
     def get_session_reset_str(self):
-        """5시간 롤링 윈도우 설명"""
-        return "🔄 롤링 5시간 윈도우"
+        """5시간 롤링 윈도우 리셋 시간"""
+        first_time = self.get_first_message_time()
+        if first_time is None:
+            return "🔄 세션 없음"
+
+        # 첫 메시지 + 5시간 = 리셋 시간
+        reset_time = first_time + timedelta(hours=5)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        delta = reset_time - now
+
+        if delta.total_seconds() <= 0:
+            return "🔄 곧 리셋"
+
+        hours = int(delta.total_seconds() // 3600)
+        minutes = int((delta.total_seconds() % 3600) // 60)
+
+        return f"🔄 {hours}시간 {minutes}분 후 리셋"
 
     def get_weekly_reset_str(self):
         """주간 리셋 시간 문자열"""
@@ -498,14 +546,19 @@ class ClaudeUsageWidget:
                 0, winreg.KEY_SET_VALUE
             )
 
-            python_path = sys.executable
-            if python_path.endswith("python.exe"):
-                pythonw_path = python_path.replace("python.exe", "pythonw.exe")
-                if os.path.exists(pythonw_path):
-                    python_path = pythonw_path
-
-            script_path = os.path.abspath(__file__)
-            command = f'"{python_path}" "{script_path}"'
+            # exe로 실행 중이면 exe 경로 사용, 아니면 pythonw + script
+            if getattr(sys, 'frozen', False):
+                # PyInstaller exe로 실행 중
+                command = f'"{sys.executable}"'
+            else:
+                # Python 스크립트로 실행 중
+                python_path = sys.executable
+                if python_path.endswith("python.exe"):
+                    pythonw_path = python_path.replace("python.exe", "pythonw.exe")
+                    if os.path.exists(pythonw_path):
+                        python_path = pythonw_path
+                script_path = os.path.abspath(__file__)
+                command = f'"{python_path}" "{script_path}"'
 
             winreg.SetValueEx(key, self.APP_NAME, 0, winreg.REG_SZ, command)
             winreg.CloseKey(key)
