@@ -19,20 +19,20 @@ import random
 
 
 class ClaudeUsageWidget:
-    # 플랜별 5시간 세션 한도 (output tokens 기준)
+    # 플랜별 5시간 세션 한도 (output tokens 기준, 추정치)
     PLAN_LIMITS = {
-        "pro": 9000,
-        "max": 18000,
-        "max_5x": 18000,
-        "max_20x": 45000,
+        "pro": 20000,      # ~20K
+        "max": 40000,      # ~40K
+        "max_5x": 40000,   # ~40K (37% @ 15K tokens)
+        "max_20x": 100000, # ~100K
     }
 
     # 플랜별 주간 한도 (output tokens 기준, 추정치)
     WEEKLY_LIMITS = {
-        "pro": 35000,
-        "max": 70000,
-        "max_5x": 70000,
-        "max_20x": 175000,
+        "pro": 55000,       # ~55K
+        "max": 110000,      # ~110K
+        "max_5x": 110000,   # ~110K (17% @ 18K tokens)
+        "max_20x": 275000,  # ~275K
     }
 
     # MZ스러운 상태 메시지들
