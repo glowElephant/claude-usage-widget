@@ -310,9 +310,11 @@ class ClaudeUsageWidget:
             "progress_bar": progress_bar
         }
 
-    def get_tokens_from_jsonl(self, filepath, since_time=None):
-        """JSONL 파일에서 토큰 사용량 추출"""
-        total_tokens = 0
+    def get_tokens_from_jsonl(self, filepath, since_time=None, msg_tokens=None):
+        """JSONL 파일에서 토큰 사용량 추출 (메시지 ID 기준 중복 제거)"""
+        if msg_tokens is None:
+            msg_tokens = {}
+
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 for line in f:
@@ -337,18 +339,28 @@ class ClaudeUsageWidget:
                         if usage:
                             # Claude Code 사용량은 주로 output tokens 기준으로 측정
                             output_tokens = usage.get("output_tokens", 0)
-                            total_tokens += output_tokens
+                            msg_id = message.get("id", "")
+
+                            # 메시지 ID가 있으면 중복 제거 (최대값만 저장)
+                            if msg_id:
+                                if msg_id not in msg_tokens or msg_tokens[msg_id] < output_tokens:
+                                    msg_tokens[msg_id] = output_tokens
+                            else:
+                                # ID 없는 메시지는 고유 키 생성
+                                unique_key = f"{filepath}_{data.get('uuid', '')}"
+                                if unique_key not in msg_tokens:
+                                    msg_tokens[unique_key] = output_tokens
                     except json.JSONDecodeError:
                         continue
         except Exception:
             pass
-        return int(total_tokens)
+        return msg_tokens
 
     def get_usage_since(self, hours=5):
-        """특정 시간 이후의 사용량 계산"""
+        """특정 시간 이후의 사용량 계산 (중복 제거)"""
         # UTC 기준으로 계산 (jsonl 타임스탬프가 UTC)
         since_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
-        total_tokens = 0
+        msg_tokens = {}  # 전체 파일에서 메시지 ID 중복 제거
 
         if not self.projects_dir.exists():
             return 0
@@ -358,20 +370,20 @@ class ClaudeUsageWidget:
                 mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime)
                 if mtime < since_time:
                     continue
-                total_tokens += self.get_tokens_from_jsonl(jsonl_file, since_time)
+                msg_tokens = self.get_tokens_from_jsonl(jsonl_file, since_time, msg_tokens)
             except:
                 continue
 
-        return total_tokens
+        return sum(msg_tokens.values())
 
     def get_weekly_usage(self):
-        """이번 주 월요일부터의 사용량 계산"""
+        """이번 주 월요일부터의 사용량 계산 (중복 제거)"""
         # UTC 기준으로 계산 (jsonl 타임스탬프가 UTC)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         monday = now - timedelta(days=now.weekday())
         monday = monday.replace(hour=0, minute=0, second=0, microsecond=0)
 
-        total_tokens = 0
+        msg_tokens = {}  # 전체 파일에서 메시지 ID 중복 제거
 
         if not self.projects_dir.exists():
             return 0
@@ -381,11 +393,11 @@ class ClaudeUsageWidget:
                 mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime)
                 if mtime < monday:
                     continue
-                total_tokens += self.get_tokens_from_jsonl(jsonl_file, monday)
+                msg_tokens = self.get_tokens_from_jsonl(jsonl_file, monday, msg_tokens)
             except:
                 continue
 
-        return total_tokens
+        return sum(msg_tokens.values())
 
     def get_first_message_time(self):
         """최근 5시간 내 첫 번째 메시지 시간 찾기"""
