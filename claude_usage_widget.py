@@ -19,20 +19,20 @@ import random
 
 
 class ClaudeUsageWidget:
-    # 플랜별 5시간 세션 한도 (output tokens 기준, 추정치)
+    # 플랜별 5시간 세션 한도 (input + output tokens 기준)
     PLAN_LIMITS = {
-        "pro": 20000,      # ~20K
-        "max": 40000,      # ~40K
-        "max_5x": 40000,   # ~40K (37% @ 15K tokens)
-        "max_20x": 100000, # ~100K
-    }
-
-    # 플랜별 주간 한도 (output tokens 기준, 추정치)
-    WEEKLY_LIMITS = {
         "pro": 55000,       # ~55K
         "max": 110000,      # ~110K
-        "max_5x": 110000,   # ~110K (17% @ 18K tokens)
+        "max_5x": 110000,   # ~110K
         "max_20x": 275000,  # ~275K
+    }
+
+    # 플랜별 주간 한도 (input + output tokens 기준)
+    WEEKLY_LIMITS = {
+        "pro": 190000,      # ~190K
+        "max": 380000,      # ~380K
+        "max_5x": 380000,   # ~380K
+        "max_20x": 950000,  # ~950K
     }
 
     # MZ스러운 상태 메시지들
@@ -337,19 +337,21 @@ class ClaudeUsageWidget:
                         usage = message.get("usage", {})
 
                         if usage:
-                            # Claude Code 사용량은 주로 output tokens 기준으로 측정
+                            # Claude Code 사용량 = input + output tokens
                             output_tokens = usage.get("output_tokens", 0)
+                            input_tokens = usage.get("input_tokens", 0)
+                            total_tokens = output_tokens + input_tokens
                             msg_id = message.get("id", "")
 
                             # 메시지 ID가 있으면 중복 제거 (최대값만 저장)
                             if msg_id:
-                                if msg_id not in msg_tokens or msg_tokens[msg_id] < output_tokens:
-                                    msg_tokens[msg_id] = output_tokens
+                                if msg_id not in msg_tokens or msg_tokens[msg_id] < total_tokens:
+                                    msg_tokens[msg_id] = total_tokens
                             else:
                                 # ID 없는 메시지는 고유 키 생성
                                 unique_key = f"{filepath}_{data.get('uuid', '')}"
                                 if unique_key not in msg_tokens:
-                                    msg_tokens[unique_key] = output_tokens
+                                    msg_tokens[unique_key] = total_tokens
                     except json.JSONDecodeError:
                         continue
         except Exception:
